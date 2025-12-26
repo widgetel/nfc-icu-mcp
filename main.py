@@ -203,7 +203,7 @@ def globeship_quick_quote(req: QuoteRequest):
     total = round(total, 2)
 
     result = {
-        "summary": f"Estimated {total} CAD (standard, 3–7 days).",
+        "summary": f"Estimated {total} CAD (standard, 3-7 days)."
         "currency": "CAD",
         "total": total,
         "service_level": "standard",
