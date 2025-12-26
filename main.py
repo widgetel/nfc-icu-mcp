@@ -6,6 +6,10 @@ app = FastAPI(
     version="0.1.0"
 )
 
+# -------------------------
+# Tool Definitions
+# -------------------------
+
 TOOLS = [
     {
         "name": "globeship.quick_quote",
@@ -23,27 +27,46 @@ TOOLS = [
     }
 ]
 
+# -------------------------
+# Health Check
+# -------------------------
+
 @app.get("/")
 def health_check():
     return {"status": "ok", "service": "nfc-icu-mcp"}
 
-# Optional: keep this for your own testing
+# -------------------------
+# Optional simple tools endpoint (your own testing)
+# -------------------------
+
 @app.get("/tools")
 def list_tools_simple():
     return {"tools": TOOLS}
 
-# ✅ MCP style endpoints
+# -------------------------
+# MCP Endpoints (IMPORTANT)
+# -------------------------
+
 @app.get("/mcp/manifest")
 def mcp_manifest():
     return {
-        "name": "nfc-icu-mcp",
+        "schema_version": "1.0",
+        "name": "nfc.icu",
+        "description": "AI-native infrastructure for logistics, identity, and real-world services",
         "version": "0.1.0",
-        "description": "MCP server for NFC.ICU and Globeship tools",
-        "tools_endpoint": "/mcp/tools"
+        "base_url": "https://api.nfc.icu",
+        "tools_endpoint": "/mcp/tools",
+        "capabilities": {
+            "tools": True
+        },
+        "contact": {
+            "email": "info@nfc.icu"
+        }
     }
 
 @app.get("/mcp/tools")
 def mcp_tools():
     return {"tools": TOOLS}
+
 
 
