@@ -1,6 +1,7 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+import os
 import re
 
 app = FastAPI(
@@ -9,7 +10,14 @@ app = FastAPI(
     version="0.1.0"
 )
 
-# --- CORS (so Hoppscotch / browser-based tools can call your API) ---
+# ============================================================
+# CONFIG
+# ============================================================
+API_KEY = os.getenv("API_KEY", "").strip()  # set in Fly secrets
+
+# ============================================================
+# CORS (so Hoppscotch / browser-based tools can call your API)
+# ============================================================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -18,17 +26,38 @@ app.add_middleware(
     ],
     allow_credentials=False,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"],  # includes X-API-Key
 )
 
-# --- Request schema shared by both tools ---
+# ============================================================
+# SIMPLE API KEY AUTH (protect POST tool execution endpoints)
+# ============================================================
+@app.middleware("http")
+async def api_key_middleware(request: Request, call_next):
+    # Only protect tool execution endpoints (POST /mcp/tools/...)
+    if request.method == "POST" and request.url.path.startswith("/mcp/tools/"):
+        # If no API_KEY is configured on the server, fail closed (safer)
+        if not API_KEY:
+            raise HTTPException(status_code=500, detail="API_KEY is not configured on server")
+
+        provided = request.headers.get("x-api-key", "")
+        if provided != API_KEY:
+            raise HTTPException(status_code=401, detail="Unauthorized (missing or invalid X-API-Key)")
+
+    return await call_next(request)
+
+# ============================================================
+# Request schema shared by both tools
+# ============================================================
 class QuoteRequest(BaseModel):
     from_postal: str = Field(..., description="Origin postal/zip code")
     to_postal: str = Field(..., description="Destination postal/zip code")
     weight_kg: float = Field(..., gt=0, description="Total shipment weight in kilograms")
     pieces: int = Field(..., ge=1, description="Number of pieces/boxes")
 
-# --- MCP tool registry (what /mcp/tools returns) ---
+# ============================================================
+# MCP tool registry (what /mcp/tools returns)
+# ============================================================
 TOOLS = [
     {
         "name": "globeship.quick_quote",
@@ -60,7 +89,9 @@ TOOLS = [
     }
 ]
 
-# --- Basic endpoints ---
+# ============================================================
+# Basic endpoints
+# ============================================================
 @app.get("/")
 def health_check():
     return {"status": "ok", "service": "nfc-icu-mcp"}
@@ -79,7 +110,9 @@ def about():
 def robots():
     return "User-agent: *\nAllow: /\n"
 
-# --- MCP-style discovery endpoints ---
+# ============================================================
+# MCP-style discovery endpoints
+# ============================================================
 @app.get("/mcp/manifest")
 def mcp_manifest():
     return {
@@ -111,8 +144,9 @@ def mcp_tools():
 def list_tools_simple():
     return {"tools": TOOLS}
 
-# --- Tool execution endpoints ---
-
+# ============================================================
+# Tool execution endpoints (protected by X-API-Key)
+# ============================================================
 @app.post("/mcp/tools/globeship.quick_quote")
 def globeship_quick_quote(req: QuoteRequest):
     # Mock quote logic (replace with real Globeship rating later)
@@ -127,6 +161,7 @@ def globeship_quick_quote(req: QuoteRequest):
         "ok": True,
         "input": req.model_dump(),
         "result": {
+            "summary": f"Estimated {round(total, 2)} CAD (standard, 3–7 days).",
             "currency": "CAD",
             "total": round(total, 2),
             "service_level": "standard",
@@ -137,7 +172,8 @@ def globeship_quick_quote(req: QuoteRequest):
                 "piece_component": round(req.pieces * per_piece, 2),
             },
             "notes": "Mock quote for end-to-end testing. Replace with real Globeship pricing engine."
-        }
+        },
+        "errors": []
     }
 
 @app.post("/mcp/tools/globeship.serviceability_check")
@@ -145,13 +181,11 @@ def globeship_serviceability_check(req: QuoteRequest):
     # Mock serviceability rules (replace later)
     issues = []
 
-    # super-light validation examples
     if req.weight_kg > 70:
         issues.append("weight_kg exceeds 70kg mock limit")
     if req.pieces > 20:
         issues.append("pieces exceeds 20 mock limit")
 
-    # basic postal sanity checks (US ZIP or CA postal)
     us_zip = re.compile(r"^\d{5}(-\d{4})?$")
     ca_postal = re.compile(r"^[A-Za-z]\d[A-Za-z][ -]?\d[A-Za-z]\d$")
 
@@ -171,6 +205,7 @@ def globeship_serviceability_check(req: QuoteRequest):
         "ok": True,
         "input": req.model_dump(),
         "result": {
+            "summary": "Lane is serviceable." if eligible else "Lane is NOT serviceable (see issues).",
             "eligible": eligible,
             "issues": issues,
             "constraints": {
@@ -179,5 +214,6 @@ def globeship_serviceability_check(req: QuoteRequest):
                 "supported_postal_formats": ["US ZIP", "CA postal"],
             },
             "notes": "Mock serviceability check for testing. Replace with real carrier/lane rules."
-        }
+        },
+        "errors": []
     }
