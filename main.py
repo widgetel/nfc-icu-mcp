@@ -1,6 +1,7 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import Any, Dict
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+import re
 
 app = FastAPI(
     title="NFC.ICU MCP Server",
@@ -8,9 +9,26 @@ app = FastAPI(
     version="0.1.0"
 )
 
-# -----------------------------
-# MCP Tool Catalog
-# -----------------------------
+# --- CORS (so Hoppscotch / browser-based tools can call your API) ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://hoppscotch.io",
+        "https://www.hoppscotch.io",
+    ],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Request schema shared by both tools ---
+class QuoteRequest(BaseModel):
+    from_postal: str = Field(..., description="Origin postal/zip code")
+    to_postal: str = Field(..., description="Destination postal/zip code")
+    weight_kg: float = Field(..., gt=0, description="Total shipment weight in kilograms")
+    pieces: int = Field(..., ge=1, description="Number of pieces/boxes")
+
+# --- MCP tool registry (what /mcp/tools returns) ---
 TOOLS = [
     {
         "name": "globeship.quick_quote",
@@ -28,50 +46,40 @@ TOOLS = [
     },
     {
         "name": "globeship.serviceability_check",
-        "description": "Check if a shipment lane is serviceable and what service levels are available",
+        "description": "Check if a lane is serviceable and return constraints (mock logic for now)",
         "input_schema": {
             "type": "object",
             "properties": {
                 "from_postal": {"type": "string"},
                 "to_postal": {"type": "string"},
-                "pieces": {"type": "integer"},
-                "weight_kg": {"type": "number"}
+                "weight_kg": {"type": "number"},
+                "pieces": {"type": "integer"}
             },
-            "required": ["from_postal", "to_postal", "pieces", "weight_kg"]
+            "required": ["from_postal", "to_postal", "weight_kg", "pieces"]
         }
     }
 ]
 
-
-# -----------------------------
-# Simple health
-# -----------------------------
+# --- Basic endpoints ---
 @app.get("/")
 def health_check():
     return {"status": "ok", "service": "nfc-icu-mcp"}
-
 
 @app.get("/about")
 def about():
     return {
         "service": "NFC.ICU MCP Server",
         "purpose": "AI-native tool endpoints for NFC.ICU and Globeship integrations.",
-        "what_this_is": "This API exposes machine-readable tool definitions and tool execution endpoints so AI agents can discover and use verified capabilities.",
         "homepage": "https://nfc.icu",
         "api_base": "https://api.nfc.icu",
         "contact": {"email": "info@nfc.icu"},
     }
 
-
 @app.get("/robots.txt")
 def robots():
-    # Keep it simple: allow crawling
     return "User-agent: *\nAllow: /\n"
 
-
-# -----------------------------
-# MCP style endpoints
-# -----------------------------
+# --- MCP-style discovery endpoints ---
 @app.get("/mcp/manifest")
 def mcp_manifest():
     return {
@@ -94,118 +102,82 @@ def mcp_manifest():
         ],
     }
 
-
 @app.get("/mcp/tools")
 def mcp_tools():
     return {"tools": TOOLS}
 
-
-# Optional: keep this for your own testing
+# Optional: keep for your own testing
 @app.get("/tools")
 def list_tools_simple():
     return {"tools": TOOLS}
 
+# --- Tool execution endpoints ---
 
-# -----------------------------
-# Tool execution
-# -----------------------------
-class ToolRequest(BaseModel):
-    # allow any JSON payload, tool-specific validation happens manually
-    __root__: Dict[str, Any]
+@app.post("/mcp/tools/globeship.quick_quote")
+def globeship_quick_quote(req: QuoteRequest):
+    # Mock quote logic (replace with real Globeship rating later)
+    base = 12.50
+    per_kg = 1.45
+    per_piece = 2.25
 
+    total = base + (req.weight_kg * per_kg) + (req.pieces * per_piece)
 
-def _get_tool(tool_name: str) -> Dict[str, Any]:
-    for t in TOOLS:
-        if t["name"] == tool_name:
-            return t
-    raise HTTPException(status_code=404, detail=f"Unknown tool: {tool_name}")
-
-
-def _require_fields(payload: Dict[str, Any], required: list):
-    missing = [k for k in required if k not in payload]
-    if missing:
-        raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")
-
-
-@app.post("/mcp/tools/{tool_name}")
-def run_tool(tool_name: str, req: ToolRequest):
-    payload = req.__root__
-
-    tool = _get_tool(tool_name)
-    required = tool["input_schema"].get("required", [])
-    _require_fields(payload, required)
-
-    # -----------------------------
-    # Tool: globeship.quick_quote (mock)
-    # -----------------------------
-    if tool_name == "globeship.quick_quote":
-        from_postal = str(payload["from_postal"])
-        to_postal = str(payload["to_postal"])
-        weight_kg = float(payload["weight_kg"])
-        pieces = int(payload["pieces"])
-
-        # Deterministic mock pricing (replace later with real carrier logic)
-        base = 12.00
-        per_kg = 1.25
-        per_piece = 1.75
-        total = round(base + (per_kg * weight_kg) + (per_piece * pieces), 2)
-
-        return {
-            "tool": tool_name,
-            "ok": True,
-            "input": {
-                "from_postal": from_postal,
-                "to_postal": to_postal,
-                "weight_kg": weight_kg,
-                "pieces": pieces
+    return {
+        "tool": "globeship.quick_quote",
+        "ok": True,
+        "input": req.model_dump(),
+        "result": {
+            "currency": "CAD",
+            "total": round(total, 2),
+            "service_level": "standard",
+            "estimated_transit_days": "3-7",
+            "breakdown": {
+                "base": base,
+                "weight_component": round(req.weight_kg * per_kg, 2),
+                "piece_component": round(req.pieces * per_piece, 2),
             },
-            "result": {
-                "currency": "CAD",
-                "total": total,
-                "service_level": "standard",
-                "estimated_transit_days": "3-7",
-                "breakdown": {
-                    "base": base,
-                    "per_kg": per_kg,
-                    "per_piece": per_piece
-                },
-                "notes": "Mock quote for end-to-end testing. Replace with live rate logic."
-            }
+            "notes": "Mock quote for end-to-end testing. Replace with real Globeship pricing engine."
         }
+    }
 
-    # -----------------------------
-    # Tool: globeship.serviceability_check (mock)
-    # -----------------------------
-    if tool_name == "globeship.serviceability_check":
-        from_postal = str(payload["from_postal"])
-        to_postal = str(payload["to_postal"])
-        weight_kg = float(payload["weight_kg"])
-        pieces = int(payload["pieces"])
+@app.post("/mcp/tools/globeship.serviceability_check")
+def globeship_serviceability_check(req: QuoteRequest):
+    # Mock serviceability rules (replace later)
+    issues = []
 
-        # Simple deterministic mock logic:
-        # - serviceable if both postals are non-empty and weight/pieces are reasonable
-        serviceable = bool(from_postal.strip()) and bool(to_postal.strip()) and weight_kg > 0 and pieces > 0
+    # super-light validation examples
+    if req.weight_kg > 70:
+        issues.append("weight_kg exceeds 70kg mock limit")
+    if req.pieces > 20:
+        issues.append("pieces exceeds 20 mock limit")
 
-        service_levels = []
-        if serviceable:
-            service_levels = ["standard", "express"] if weight_kg <= 30 else ["standard"]
+    # basic postal sanity checks (US ZIP or CA postal)
+    us_zip = re.compile(r"^\d{5}(-\d{4})?$")
+    ca_postal = re.compile(r"^[A-Za-z]\d[A-Za-z][ -]?\d[A-Za-z]\d$")
 
-        return {
-            "tool": tool_name,
-            "ok": True,
-            "input": {
-                "from_postal": from_postal,
-                "to_postal": to_postal,
-                "weight_kg": weight_kg,
-                "pieces": pieces
+    def looks_valid(code: str) -> bool:
+        c = code.strip()
+        return bool(us_zip.match(c) or ca_postal.match(c))
+
+    if not looks_valid(req.from_postal):
+        issues.append("from_postal format not recognized (expected US ZIP or CA postal)")
+    if not looks_valid(req.to_postal):
+        issues.append("to_postal format not recognized (expected US ZIP or CA postal)")
+
+    eligible = len(issues) == 0
+
+    return {
+        "tool": "globeship.serviceability_check",
+        "ok": True,
+        "input": req.model_dump(),
+        "result": {
+            "eligible": eligible,
+            "issues": issues,
+            "constraints": {
+                "max_weight_kg": 70,
+                "max_pieces": 20,
+                "supported_postal_formats": ["US ZIP", "CA postal"],
             },
-            "result": {
-                "serviceable": serviceable,
-                "available_service_levels": service_levels,
-                "carrier_hint": "globeship",
-                "notes": "Mock serviceability check for testing. Replace with lane/carrier validation."
-            }
+            "notes": "Mock serviceability check for testing. Replace with real carrier/lane rules."
         }
-
-    # If a tool exists but has no handler yet:
-    raise HTTPException(status_code=501, detail=f"Tool not implemented yet: {tool_name}")
+    }
